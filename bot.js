@@ -1,9 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api');
-require('dotenv').config();
 
-const bot = new TelegramBot(process.env.TOKEN, { polling: true });
-
-let giveaways = {};
+const TOKEN = '8270250780:AAFSgyrx0fsSzklLJjFwEUVQHYzsNpPCPRs';
+const bot = new TelegramBot(TOKEN, { polling: true });
 
 // Создание розыгрыша
 // /giveaway Приз | 2 | 60
