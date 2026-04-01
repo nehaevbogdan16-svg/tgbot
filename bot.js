@@ -3,112 +3,165 @@ const TelegramBot = require('node-telegram-bot-api');
 const TOKEN = '8270250780:AAFSgyrx0fsSzklLJjFwEUVQHYzsNpPCPRs';
 const bot = new TelegramBot(TOKEN, { polling: true });
 
-// Создание розыгрыша
-// /giveaway Приз | 2 | 60
-// (приз | победителей | секунд)
-bot.onText(/\/giveaway (.+)/, (msg, match) => {
+// /giveaway Приз | @канал | 2 | 60 | ссылка_на_картинку
+bot.onText(/\/giveaway (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
     const args = match[1].split('|');
 
     const prize = args[0].trim();
-    const winnersCount = parseInt(args[1]) || 1;
-    const duration = parseInt(args[2]) || 60;
+    const channel = args[1].trim();
+    const winnersCount = parseInt(args[2]) || 1;
+    const duration = parseInt(args[3]) || 60;
+    const image = args[4]?.trim();
 
     const giveawayId = Date.now();
 
     giveaways[giveawayId] = {
         prize,
+        channel,
         winnersCount,
         participants: [],
         chatId,
         messageId: null
     };
 
-    bot.sendMessage(chatId,
+    const caption =
         `🎁 РОЗЫГРЫШ\n\n` +
         `🎉 Приз: ${prize}\n` +
+        `📢 Подписка: ${channel}\n` +
         `👥 Победителей: ${winnersCount}\n` +
-        `⏱ Время: ${duration} сек\n\n` +
-        `Участников: 0`,
-        {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: "🎉 Участвовать", callback_data: `join_${giveawayId}` }]
-                ]
-            }
-        }
-    ).then(sentMsg => {
-        giveaways[giveawayId].messageId = sentMsg.message_id;
-    });
+        `⏱ ${duration} сек\n\n` +
+        `Участников: 0`;
 
-    // Таймер завершения
+    const keyboard = {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: "🎉 Участвовать", callback_data: `join_${giveawayId}` }],
+                [{ text: "✅ Проверить подписку", callback_data: `check_${giveawayId}` }]
+            ]
+        }
+    };
+
+    let sent;
+
+    if (image) {
+        sent = await bot.sendPhoto(chatId, image, { caption, ...keyboard });
+    } else {
+        sent = await bot.sendMessage(chatId, caption, keyboard);
+    }
+
+    giveaways[giveawayId].messageId = sent.message_id;
+
     setTimeout(() => finishGiveaway(giveawayId), duration * 1000);
 });
 
-// Участие
-bot.on('callback_query', (query) => {
+// Проверка подписки
+async function isSubscribed(userId, channel) {
+    try {
+        const member = await bot.getChatMember(channel, userId);
+        return ['member', 'administrator', 'creator'].includes(member.status);
+    } catch {
+        return false;
+    }
+}
+
+// Кнопки
+bot.on('callback_query', async (query) => {
     const data = query.data;
     const user = query.from;
 
     if (data.startsWith('join_')) {
-        const giveawayId = data.split('_')[1];
-        const giveaway = giveaways[giveawayId];
+        const id = data.split('_')[1];
+        const g = giveaways[id];
+        if (!g) return;
 
-        if (!giveaway) return;
+        const subscribed = await isSubscribed(user.id, g.channel);
 
-        if (giveaway.participants.find(p => p.id === user.id)) {
-            return bot.answerCallbackQuery(query.id, { text: "Ты уже участвуешь ❌" });
+        if (!subscribed) {
+            return bot.answerCallbackQuery(query.id, {
+                text: "❌ Подпишись на канал сначала",
+                show_alert: true
+            });
         }
 
-        giveaway.participants.push({
+        if (g.participants.find(p => p.id === user.id)) {
+            return bot.answerCallbackQuery(query.id, { text: "Ты уже участвуешь" });
+        }
+
+        g.participants.push({
             id: user.id,
             name: user.first_name
         });
 
         bot.answerCallbackQuery(query.id, { text: "Ты участвуешь ✅" });
 
-        // Обновляем сообщение
-        bot.editMessageText(
-            `🎁 РОЗЫГРЫШ\n\n` +
-            `🎉 Приз: ${giveaway.prize}\n` +
-            `👥 Победителей: ${giveaway.winnersCount}\n\n` +
-            `Участников: ${giveaway.participants.length}`,
-            {
-                chat_id: giveaway.chatId,
-                message_id: giveaway.messageId,
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: "🎉 Участвовать", callback_data: `join_${giveawayId}` }]
-                    ]
-                }
-            }
-        );
+        updateMessage(id);
+    }
+
+    if (data.startsWith('check_')) {
+        const id = data.split('_')[1];
+        const g = giveaways[id];
+        if (!g) return;
+
+        const subscribed = await isSubscribed(user.id, g.channel);
+
+        if (subscribed) {
+            bot.answerCallbackQuery(query.id, { text: "✅ Подписка есть!" });
+        } else {
+            bot.answerCallbackQuery(query.id, {
+                text: "❌ Ты не подписан",
+                show_alert: true
+            });
+        }
     }
 });
 
+// Обновление сообщения
+function updateMessage(id) {
+    const g = giveaways[id];
+
+    bot.editMessageCaption(
+        `🎁 РОЗЫГРЫШ\n\n` +
+        `🎉 Приз: ${g.prize}\n` +
+        `📢 Подписка: ${g.channel}\n` +
+        `👥 Победителей: ${g.winnersCount}\n\n` +
+        `Участников: ${g.participants.length}`,
+        {
+            chat_id: g.chatId,
+            message_id: g.messageId,
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "🎉 Участвовать", callback_data: `join_${id}` }],
+                    [{ text: "✅ Проверить подписку", callback_data: `check_${id}` }]
+                ]
+            }
+        }
+    ).catch(() => {});
+}
+
 // Завершение
-function finishGiveaway(giveawayId) {
-    const giveaway = giveaways[giveawayId];
-    if (!giveaway) return;
+function finishGiveaway(id) {
+    const g = giveaways[id];
+    if (!g) return;
 
-    const { participants, winnersCount, chatId } = giveaway;
-
-    if (participants.length === 0) {
-        bot.sendMessage(chatId, "❌ Нет участников");
+    if (g.participants.length === 0) {
+        bot.sendMessage(g.chatId, "❌ Нет участников");
         return;
     }
 
-    let shuffled = participants.sort(() => 0.5 - Math.random());
-    let winners = shuffled.slice(0, winnersCount);
+    let shuffled = g.participants.sort(() => 0.5 - Math.random());
+    let winners = shuffled.slice(0, g.winnersCount);
 
-    const winnersText = winners.map(w => `[${w.name}](tg://user?id=${w.id})`).join('\n');
+    const text = winners
+        .map(w => `[${w.name}](tg://user?id=${w.id})`)
+        .join('\n');
 
-    bot.sendMessage(chatId,
-        `🏆 РЕЗУЛЬТАТЫ РОЗЫГРЫША\n\n${winnersText}`,
+    bot.sendMessage(g.chatId,
+        `🏆 ПОБЕДИТЕЛИ:\n\n${text}`,
         { parse_mode: 'Markdown' }
     );
 
-    delete giveaways[giveawayId];
+    delete giveaways[id];
 }
 
-console.log("Бот запущен 🚀");
+console.log("🔥 Бот с проверкой подписки запущен");
