@@ -1,10 +1,27 @@
 const TelegramBot = require('node-telegram-bot-api');
+const express = require('express');
+require('dotenv').config();
 
-const TOKEN = '8270250780:AAFSgyrx0fsSzklLJjFwEUVQHYzsNpPCPRs';
-const bot = new TelegramBot(TOKEN, { polling: true });
+const bot = new TelegramBot(process.env.TOKEN, { polling: true });
 
-// /giveaway Приз | @канал | 2 | 60 | ссылка_на_картинку
+// ВСТАВЬ СВОЙ ID
+const ADMINS = [123456789];
+
+function isAdmin(id) {
+    return ADMINS.includes(id);
+}
+
+let giveaways = {};
+
+// WEB (чтобы Railway не засыпал)
+const app = express();
+app.get('/', (req, res) => res.send('Bot is running'));
+app.listen(3000, () => console.log('Web server started'));
+
+// СОЗДАНИЕ РОЗЫГРЫША
 bot.onText(/\/giveaway (.+)/, async (msg, match) => {
+    if (!isAdmin(msg.from.id)) return;
+
     const chatId = msg.chat.id;
     const args = match[1].split('|');
 
@@ -14,9 +31,9 @@ bot.onText(/\/giveaway (.+)/, async (msg, match) => {
     const duration = parseInt(args[3]) || 60;
     const image = args[4]?.trim();
 
-    const giveawayId = Date.now();
+    const id = Date.now();
 
-    giveaways[giveawayId] = {
+    giveaways[id] = {
         prize,
         channel,
         winnersCount,
@@ -25,9 +42,9 @@ bot.onText(/\/giveaway (.+)/, async (msg, match) => {
         messageId: null
     };
 
-    const caption =
+    const text =
         `🎁 РОЗЫГРЫШ\n\n` +
-        `🎉 Приз: ${prize}\n` +
+        `🎉 ${prize}\n` +
         `📢 Подписка: ${channel}\n` +
         `👥 Победителей: ${winnersCount}\n` +
         `⏱ ${duration} сек\n\n` +
@@ -36,8 +53,8 @@ bot.onText(/\/giveaway (.+)/, async (msg, match) => {
     const keyboard = {
         reply_markup: {
             inline_keyboard: [
-                [{ text: "🎉 Участвовать", callback_data: `join_${giveawayId}` }],
-                [{ text: "✅ Проверить подписку", callback_data: `check_${giveawayId}` }]
+                [{ text: "🎉 Участвовать", callback_data: `join_${id}` }],
+                [{ text: "✅ Проверить подписку", callback_data: `check_${id}` }]
             ]
         }
     };
@@ -45,17 +62,17 @@ bot.onText(/\/giveaway (.+)/, async (msg, match) => {
     let sent;
 
     if (image) {
-        sent = await bot.sendPhoto(chatId, image, { caption, ...keyboard });
+        sent = await bot.sendPhoto(chatId, image, { caption: text, ...keyboard });
     } else {
-        sent = await bot.sendMessage(chatId, caption, keyboard);
+        sent = await bot.sendMessage(chatId, text, keyboard);
     }
 
-    giveaways[giveawayId].messageId = sent.message_id;
+    giveaways[id].messageId = sent.message_id;
 
-    setTimeout(() => finishGiveaway(giveawayId), duration * 1000);
+    setTimeout(() => finishGiveaway(id), duration * 1000);
 });
 
-// Проверка подписки
+// ПРОВЕРКА ПОДПИСКИ
 async function isSubscribed(userId, channel) {
     try {
         const member = await bot.getChatMember(channel, userId);
@@ -65,21 +82,22 @@ async function isSubscribed(userId, channel) {
     }
 }
 
-// Кнопки
+// КНОПКИ
 bot.on('callback_query', async (query) => {
     const data = query.data;
     const user = query.from;
 
+    // УЧАСТИЕ
     if (data.startsWith('join_')) {
         const id = data.split('_')[1];
         const g = giveaways[id];
         if (!g) return;
 
-        const subscribed = await isSubscribed(user.id, g.channel);
+        const ok = await isSubscribed(user.id, g.channel);
 
-        if (!subscribed) {
+        if (!ok) {
             return bot.answerCallbackQuery(query.id, {
-                text: "❌ Подпишись на канал сначала",
+                text: "Подпишись на канал ❌",
                 show_alert: true
             });
         }
@@ -98,32 +116,96 @@ bot.on('callback_query', async (query) => {
         updateMessage(id);
     }
 
+    // ПРОВЕРКА
     if (data.startsWith('check_')) {
         const id = data.split('_')[1];
         const g = giveaways[id];
         if (!g) return;
 
-        const subscribed = await isSubscribed(user.id, g.channel);
+        const ok = await isSubscribed(user.id, g.channel);
 
-        if (subscribed) {
-            bot.answerCallbackQuery(query.id, { text: "✅ Подписка есть!" });
-        } else {
-            bot.answerCallbackQuery(query.id, {
-                text: "❌ Ты не подписан",
-                show_alert: true
-            });
+        bot.answerCallbackQuery(query.id, {
+            text: ok ? "✅ Подписан" : "❌ Не подписан",
+            show_alert: !ok
+        });
+    }
+
+    // АДМИНКА
+    if (data === "admin_list") {
+        if (!isAdmin(user.id)) return;
+
+        let buttons = Object.keys(giveaways).map(id => [{
+            text: `🎁 ${giveaways[id].prize}`,
+            callback_data: `admin_view_${id}`
+        }]);
+
+        if (!buttons.length) {
+            return bot.sendMessage(query.message.chat.id, "Нет розыгрышей");
         }
+
+        bot.sendMessage(query.message.chat.id, "📊 Розыгрыши:", {
+            reply_markup: { inline_keyboard: buttons }
+        });
+    }
+
+    if (data.startsWith("admin_view_")) {
+        if (!isAdmin(user.id)) return;
+
+        const id = data.split("_")[2];
+        const g = giveaways[id];
+        if (!g) return;
+
+        bot.sendMessage(query.message.chat.id,
+            `🎁 ${g.prize}\n👥 ${g.participants.length}`,
+            {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "🏆 Завершить", callback_data: `admin_finish_${id}` }],
+                        [{ text: "👥 Участники", callback_data: `admin_users_${id}` }],
+                        [{ text: "🗑 Удалить", callback_data: `admin_delete_${id}` }]
+                    ]
+                }
+            }
+        );
+    }
+
+    if (data.startsWith("admin_finish_")) {
+        if (!isAdmin(user.id)) return;
+
+        const id = data.split("_")[2];
+        finishGiveaway(id);
+    }
+
+    if (data.startsWith("admin_users_")) {
+        if (!isAdmin(user.id)) return;
+
+        const id = data.split("_")[2];
+        const g = giveaways[id];
+        if (!g) return;
+
+        const list = g.participants.map(p => `${p.name} (${p.id})`).join("\n");
+
+        bot.sendMessage(query.message.chat.id, list || "Нет участников");
+    }
+
+    if (data.startsWith("admin_delete_")) {
+        if (!isAdmin(user.id)) return;
+
+        const id = data.split("_")[2];
+        delete giveaways[id];
+
+        bot.sendMessage(query.message.chat.id, "Удалено");
     }
 });
 
-// Обновление сообщения
+// ОБНОВЛЕНИЕ
 function updateMessage(id) {
     const g = giveaways[id];
 
     bot.editMessageCaption(
         `🎁 РОЗЫГРЫШ\n\n` +
-        `🎉 Приз: ${g.prize}\n` +
-        `📢 Подписка: ${g.channel}\n` +
+        `🎉 ${g.prize}\n` +
+        `📢 ${g.channel}\n` +
         `👥 Победителей: ${g.winnersCount}\n\n` +
         `Участников: ${g.participants.length}`,
         {
@@ -139,29 +221,43 @@ function updateMessage(id) {
     ).catch(() => {});
 }
 
-// Завершение
+// ЗАВЕРШЕНИЕ
 function finishGiveaway(id) {
     const g = giveaways[id];
     if (!g) return;
 
-    if (g.participants.length === 0) {
-        bot.sendMessage(g.chatId, "❌ Нет участников");
+    if (!g.participants.length) {
+        bot.sendMessage(g.chatId, "Нет участников");
         return;
     }
 
-    let shuffled = g.participants.sort(() => 0.5 - Math.random());
-    let winners = shuffled.slice(0, g.winnersCount);
+    let winners = g.participants
+        .sort(() => 0.5 - Math.random())
+        .slice(0, g.winnersCount);
 
-    const text = winners
-        .map(w => `[${w.name}](tg://user?id=${w.id})`)
-        .join('\n');
+    const text = winners.map(w =>
+        `[${w.name}](tg://user?id=${w.id})`
+    ).join('\n');
 
     bot.sendMessage(g.chatId,
-        `🏆 ПОБЕДИТЕЛИ:\n\n${text}`,
+        `🏆 Победители:\n\n${text}`,
         { parse_mode: 'Markdown' }
     );
 
     delete giveaways[id];
 }
 
-console.log("🔥 Бот с проверкой подписки запущен");
+// КОМАНДА АДМИНКИ
+bot.onText(/\/admin/, (msg) => {
+    if (!isAdmin(msg.from.id)) return;
+
+    bot.sendMessage(msg.chat.id, "Админ-панель", {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: "📊 Розыгрыши", callback_data: "admin_list" }]
+            ]
+        }
+    });
+});
+
+console.log("🚀 Бот запущен");
