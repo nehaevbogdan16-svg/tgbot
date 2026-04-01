@@ -1,30 +1,37 @@
 const TelegramBot = require('node-telegram-bot-api');
+require('dotenv').config();
 
-const TOKEN = '8270250780:AAFSgyrx0fsSzklLJjFwEUVQHYzsNpPCPRs';
-const bot = new TelegramBot(TOKEN, { polling: true });
+const bot = new TelegramBot(process.env.TOKEN, { polling: true });
 
-// Хранилище розыгрышей
 let giveaways = {};
 
 // Создание розыгрыша
+// /giveaway Приз | 2 | 60
+// (приз | победителей | секунд)
 bot.onText(/\/giveaway (.+)/, (msg, match) => {
     const chatId = msg.chat.id;
-    const text = match[1];
+    const args = match[1].split('|');
 
-    const args = text.split('|');
-    const prize = args[0];
+    const prize = args[0].trim();
     const winnersCount = parseInt(args[1]) || 1;
+    const duration = parseInt(args[2]) || 60;
 
     const giveawayId = Date.now();
 
     giveaways[giveawayId] = {
         prize,
         winnersCount,
-        participants: []
+        participants: [],
+        chatId,
+        messageId: null
     };
 
-    bot.sendMessage(chatId, 
-        `🎁 РОЗЫГРЫШ!\n\nПриз: ${prize}\nПобедителей: ${winnersCount}`, 
+    bot.sendMessage(chatId,
+        `🎁 РОЗЫГРЫШ\n\n` +
+        `🎉 Приз: ${prize}\n` +
+        `👥 Победителей: ${winnersCount}\n` +
+        `⏱ Время: ${duration} сек\n\n` +
+        `Участников: 0`,
         {
             reply_markup: {
                 inline_keyboard: [
@@ -32,13 +39,18 @@ bot.onText(/\/giveaway (.+)/, (msg, match) => {
                 ]
             }
         }
-    );
+    ).then(sentMsg => {
+        giveaways[giveawayId].messageId = sentMsg.message_id;
+    });
+
+    // Таймер завершения
+    setTimeout(() => finishGiveaway(giveawayId), duration * 1000);
 });
 
 // Участие
 bot.on('callback_query', (query) => {
     const data = query.data;
-    const userId = query.from.id;
+    const user = query.from;
 
     if (data.startsWith('join_')) {
         const giveawayId = data.split('_')[1];
@@ -46,43 +58,59 @@ bot.on('callback_query', (query) => {
 
         if (!giveaway) return;
 
-        if (!giveaway.participants.includes(userId)) {
-            giveaway.participants.push(userId);
-            bot.answerCallbackQuery(query.id, { text: "Ты участвуешь!" });
-        } else {
-            bot.answerCallbackQuery(query.id, { text: "Ты уже участвуешь!" });
+        if (giveaway.participants.find(p => p.id === user.id)) {
+            return bot.answerCallbackQuery(query.id, { text: "Ты уже участвуешь ❌" });
         }
+
+        giveaway.participants.push({
+            id: user.id,
+            name: user.first_name
+        });
+
+        bot.answerCallbackQuery(query.id, { text: "Ты участвуешь ✅" });
+
+        // Обновляем сообщение
+        bot.editMessageText(
+            `🎁 РОЗЫГРЫШ\n\n` +
+            `🎉 Приз: ${giveaway.prize}\n` +
+            `👥 Победителей: ${giveaway.winnersCount}\n\n` +
+            `Участников: ${giveaway.participants.length}`,
+            {
+                chat_id: giveaway.chatId,
+                message_id: giveaway.messageId,
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "🎉 Участвовать", callback_data: `join_${giveawayId}` }]
+                    ]
+                }
+            }
+        );
     }
 });
 
-// Выбор победителя
-bot.onText(/\/finish (.+)/, (msg, match) => {
-    const chatId = msg.chat.id;
-    const giveawayId = match[1];
-
+// Завершение
+function finishGiveaway(giveawayId) {
     const giveaway = giveaways[giveawayId];
+    if (!giveaway) return;
 
-    if (!giveaway) {
-        return bot.sendMessage(chatId, "Розыгрыш не найден");
+    const { participants, winnersCount, chatId } = giveaway;
+
+    if (participants.length === 0) {
+        bot.sendMessage(chatId, "❌ Нет участников");
+        return;
     }
 
-    if (giveaway.participants.length === 0) {
-        return bot.sendMessage(chatId, "Нет участников");
-    }
+    let shuffled = participants.sort(() => 0.5 - Math.random());
+    let winners = shuffled.slice(0, winnersCount);
 
-    let winners = [];
+    const winnersText = winners.map(w => `[${w.name}](tg://user?id=${w.id})`).join('\n');
 
-    for (let i = 0; i < giveaway.winnersCount; i++) {
-        const randomIndex = Math.floor(Math.random() * giveaway.participants.length);
-        winners.push(giveaway.participants[randomIndex]);
-    }
-
-    bot.sendMessage(chatId, 
-        `🏆 Победители:\n${winners.map(id => `[user](tg://user?id=${id})`).join('\n')}`, 
+    bot.sendMessage(chatId,
+        `🏆 РЕЗУЛЬТАТЫ РОЗЫГРЫША\n\n${winnersText}`,
         { parse_mode: 'Markdown' }
     );
 
     delete giveaways[giveawayId];
-});
+}
 
 console.log("Бот запущен 🚀");
