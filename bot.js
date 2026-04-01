@@ -5,7 +5,7 @@ require('dotenv').config();
 const bot = new TelegramBot(process.env.TOKEN, { polling: true });
 
 // ВСТАВЬ СВОЙ ID
-const ADMINS = [123456789];
+const ADMINS = [2053617850];
 
 function isAdmin(id) {
     return ADMINS.includes(id);
